@@ -1,17 +1,28 @@
-"""Lê a playlist 'Best Pop Rock Ever' do YouTube Music, classifica cada
-faixa como Pop ou Rock usando o Gemini, e organiza o resultado em duas
-novas playlists: 'Best Pop Ever' e 'Best Rock Ever'.
+"""Ferramentas de linha de comando para playlists do YouTube Music.
+
+Comandos disponíveis:
+
+  classify
+      Lê a playlist 'Best Pop Rock Ever', classifica cada faixa como Pop ou
+      Rock via Gemini, e organiza o resultado em 'Best Pop Ever' /
+      'Best Rock Ever'.
+
+  update-playlist
+      Analisa o padrão de gosto musical de uma playlist existente, busca no
+      YouTube Music novas músicas que combinem com esse padrão e deixa você
+      escolher quais adicionar.
 
 Uso:
-    python main.py [--dry-run]
+    python main.py classify [--dry-run]
+    python main.py update-playlist --playlist "Nome da playlist" [--batch-size N]
 
 Configuração via variáveis de ambiente (ou arquivo .env, veja .env.example):
     GEMINI_API_KEY          obrigatório
     GEMINI_MODEL            padrão: gemini-2.5-flash
     YTMUSIC_AUTH_FILE       padrão: oauth.json
-    SOURCE_PLAYLIST_NAME    padrão: Best Pop Rock Ever
-    POP_PLAYLIST_NAME       padrão: Best Pop Ever
-    ROCK_PLAYLIST_NAME      padrão: Best Rock Ever
+    SOURCE_PLAYLIST_NAME    padrão: Best Pop Rock Ever (usado por 'classify')
+    POP_PLAYLIST_NAME       padrão: Best Pop Ever (usado por 'classify')
+    ROCK_PLAYLIST_NAME      padrão: Best Rock Ever (usado por 'classify')
 """
 
 from __future__ import annotations
@@ -23,30 +34,18 @@ import sys
 from dotenv import load_dotenv
 
 from gemini_classifier import GeminiClassifier
+from suggestion_engine import MAX_BATCH_SIZE, SuggestionEngine
+from taste_advisor import TasteAdvisor
 from ytmusic_client import PlaylistNotFoundError, YTMusicClient
 
 
-def main() -> int:
-    load_dotenv()
-
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Classifica e mostra o resultado sem criar/alterar playlists.",
-    )
-    args = parser.parse_args()
-
+def _require_env(auth_file: str) -> tuple[str, str] | int:
+    """Valida GEMINI_API_KEY e a existência do arquivo de autenticação.
+    Retorna (api_key, model) em caso de sucesso, ou um código de saída."""
     gemini_api_key = os.environ.get("GEMINI_API_KEY")
     if not gemini_api_key:
         print("Erro: defina a variável de ambiente GEMINI_API_KEY.", file=sys.stderr)
         return 1
-
-    gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-    auth_file = os.environ.get("YTMUSIC_AUTH_FILE", "oauth.json")
-    source_playlist_name = os.environ.get("SOURCE_PLAYLIST_NAME", "Best Pop Rock Ever")
-    pop_playlist_name = os.environ.get("POP_PLAYLIST_NAME", "Best Pop Ever")
-    rock_playlist_name = os.environ.get("ROCK_PLAYLIST_NAME", "Best Rock Ever")
 
     if not os.path.exists(auth_file):
         print(
@@ -55,6 +54,21 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+
+    gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    return gemini_api_key, gemini_model
+
+
+def run_classify(args: argparse.Namespace) -> int:
+    auth_file = os.environ.get("YTMUSIC_AUTH_FILE", "oauth.json")
+    env = _require_env(auth_file)
+    if isinstance(env, int):
+        return env
+    gemini_api_key, gemini_model = env
+
+    source_playlist_name = os.environ.get("SOURCE_PLAYLIST_NAME", "Best Pop Rock Ever")
+    pop_playlist_name = os.environ.get("POP_PLAYLIST_NAME", "Best Pop Ever")
+    rock_playlist_name = os.environ.get("ROCK_PLAYLIST_NAME", "Best Rock Ever")
 
     client = YTMusicClient(auth_file)
 
@@ -98,6 +112,132 @@ def main() -> int:
 
     print("\nConcluído.")
     return 0
+
+
+def _parse_selection(text: str, max_index: int) -> list[int]:
+    """Converte "1,3,5" em [1, 3, 5], ignorando entradas inválidas ou fora
+    do intervalo do lote atual."""
+    indices: list[int] = []
+    for part in text.replace(" ", "").split(","):
+        if part.isdigit():
+            n = int(part)
+            if 1 <= n <= max_index and n not in indices:
+                indices.append(n)
+    return indices
+
+
+def run_update_playlist(args: argparse.Namespace) -> int:
+    auth_file = os.environ.get("YTMUSIC_AUTH_FILE", "oauth.json")
+    env = _require_env(auth_file)
+    if isinstance(env, int):
+        return env
+    gemini_api_key, gemini_model = env
+
+    batch_size = min(args.batch_size, MAX_BATCH_SIZE)
+    if args.batch_size > MAX_BATCH_SIZE:
+        print(f"Aviso: batch-size limitado a {MAX_BATCH_SIZE} sugestões por rodada.")
+
+    client = YTMusicClient(auth_file)
+
+    print(f"Buscando playlist '{args.playlist}'...")
+    try:
+        playlist_id = client.find_playlist_id_by_name(args.playlist)
+    except PlaylistNotFoundError as exc:
+        print(f"Erro: {exc}", file=sys.stderr)
+        return 1
+
+    tracks = client.get_playlist_tracks(playlist_id)
+    print(f"{len(tracks)} faixas na playlist atual.")
+    if not tracks:
+        print("A playlist está vazia; não há como determinar um padrão de gosto.", file=sys.stderr)
+        return 1
+
+    advisor = TasteAdvisor(api_key=gemini_api_key, model=gemini_model)
+
+    print("Analisando o padrão de gosto musical da playlist...")
+    taste_profile = advisor.build_taste_profile(tracks)
+    print(f"\nPadrão de gosto identificado:\n{taste_profile}\n")
+
+    engine = SuggestionEngine(advisor, client, tracks)
+    total_added = 0
+
+    while True:
+        print("Buscando sugestões no YouTube Music...")
+        batch = engine.next_batch(taste_profile, max_results=batch_size)
+        if not batch:
+            print("Não há mais sugestões novas no momento.")
+            break
+
+        print("\nSugestões (máx. 10 por rodada):")
+        for i, suggestion in enumerate(batch, start=1):
+            print(f"  {i}. {suggestion.title} — {suggestion.artists}")
+            print(f"     motivo: {suggestion.reason}")
+
+        selection = input(
+            "\nDigite os números das músicas para adicionar (ex.: 1,3,5), "
+            "'mais' para novas sugestões ou 'sair' para terminar: "
+        ).strip().casefold()
+
+        if selection in ("sair", "s", "exit", "quit"):
+            break
+        if selection in ("mais", "m", "more"):
+            continue
+
+        chosen_indices = _parse_selection(selection, len(batch))
+        if not chosen_indices:
+            print("Nenhuma seleção válida reconhecida; tente novamente.")
+            continue
+
+        chosen = [batch[i - 1] for i in chosen_indices]
+        client.add_tracks(playlist_id, [s.video_id for s in chosen])
+        total_added += len(chosen)
+        print(f"Adicionada(s) {len(chosen)} música(s) à playlist '{args.playlist}'.")
+
+        again = input("Ver mais sugestões? (s/n): ").strip().casefold()
+        if again not in ("s", "sim", "y", "yes"):
+            break
+
+    print(f"\nConcluído. Total de músicas adicionadas: {total_added}.")
+    return 0
+
+
+def main() -> int:
+    load_dotenv()
+
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    classify_parser = subparsers.add_parser(
+        "classify",
+        help="Classifica 'Best Pop Rock Ever' em Best Pop Ever / Best Rock Ever.",
+    )
+    classify_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Classifica e mostra o resultado sem criar/alterar playlists.",
+    )
+
+    update_parser = subparsers.add_parser(
+        "update-playlist",
+        help="Sugere novas músicas para uma playlist existente com base no padrão de gosto dela.",
+    )
+    update_parser.add_argument(
+        "--playlist", required=True, help="Nome da playlist a atualizar."
+    )
+    update_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=MAX_BATCH_SIZE,
+        help=f"Máximo de sugestões mostradas por rodada (padrão e limite: {MAX_BATCH_SIZE}).",
+    )
+
+    args = parser.parse_args()
+
+    if args.command == "classify":
+        return run_classify(args)
+    return run_update_playlist(args)
 
 
 if __name__ == "__main__":

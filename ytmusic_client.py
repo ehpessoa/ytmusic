@@ -60,3 +60,17 @@ class YTMusicClient:
         for i in range(0, len(video_ids), chunk_size):
             chunk = video_ids[i : i + chunk_size]
             self.yt.add_playlist_items(playlist_id, chunk, duplicates=False)
+
+    def search_song(self, title: str, artist: str) -> Track | None:
+        """Busca uma faixa real no YouTube Music a partir de título/artista
+        sugeridos pelo Gemini. Retorna None se nada correspondente for
+        encontrado."""
+        query = f"{title} {artist}".strip()
+        results = self.yt.search(query, filter="songs", limit=5)
+        for result in results:
+            video_id = result.get("videoId")
+            if not video_id:
+                continue
+            artists = ", ".join(a["name"] for a in result.get("artists") or [])
+            return Track(video_id=video_id, title=result.get("title", title), artists=artists)
+        return None

@@ -1,19 +1,21 @@
-# YouTube Music Pop/Rock Classifier
+# YouTube Music Toolkit
 
-Lê todas as músicas da playlist **Best Pop Rock Ever** da sua conta do
-YouTube Music, usa o **Gemini** para identificar o que é realmente Pop e o
-que é realmente Rock, e organiza o resultado em duas novas playlists:
+Ferramentas de linha de comando para a sua conta do YouTube Music, com
+apoio do **Gemini**:
 
-- **Best Pop Ever**
-- **Best Rock Ever**
+- **`classify`** — lê todas as músicas da playlist **Best Pop Rock Ever**,
+  identifica o que é realmente Pop e o que é realmente Rock, e organiza o
+  resultado em duas novas playlists: **Best Pop Ever** e **Best Rock Ever**.
+- **`update-playlist`** — analisa o padrão de gosto musical de uma
+  playlist existente, busca no YouTube Music novas músicas que combinem
+  com esse padrão e deixa você escolher quais adicionar.
 
-Se uma playlist com esse nome já existir na sua biblioteca, as faixas são
-adicionadas a ela em vez de criar uma duplicata.
+Se uma playlist com o nome de destino já existir na sua biblioteca, as
+faixas são adicionadas a ela em vez de criar uma duplicata.
 
 ## 1. Instalar dependências
 
 ```bash
-cd youtube-music-classifier
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -57,13 +59,34 @@ cp .env.example .env
 
 ## 4. Rodar
 
+### Classificar Pop Rock Ever em Pop / Rock
+
 ```bash
-python main.py
+python main.py classify
 ```
 
-Use `python main.py --dry-run` para ver a classificação de cada faixa no
-terminal sem criar ou alterar nenhuma playlist na sua conta — útil para
-conferir o resultado antes de aplicar.
+Use `python main.py classify --dry-run` para ver a classificação de cada
+faixa no terminal sem criar ou alterar nenhuma playlist na sua conta —
+útil para conferir o resultado antes de aplicar.
+
+### Sugerir novas músicas para uma playlist existente
+
+```bash
+python main.py update-playlist --playlist "Best Rock Ever"
+```
+
+O comando:
+
+1. Lê todas as faixas da playlist informada.
+2. Pede ao Gemini um resumo do padrão de gosto musical (gêneros, época,
+   artistas de referência, clima).
+3. Busca no YouTube Music músicas reais que combinem com esse padrão e
+   ainda não estejam na playlist, mostrando até **10 sugestões por vez**
+   (use `--batch-size` para pedir menos; o teto de 10 não pode ser
+   ultrapassado).
+4. Você escolhe quais adicionar digitando os números (ex.: `1,3,5`),
+   digita `mais` para ver uma nova leva de sugestões — que nunca repete
+   uma música já mostrada nesta mesma execução — ou `sair` para terminar.
 
 ## Observações
 
@@ -72,5 +95,8 @@ conferir o resultado antes de aplicar.
   apenas no arquivo local `oauth.json`/`browser.json`, que **não deve ser
   commitado** (já está coberto pelo `.gitignore`).
 - Faixas indisponíveis (removidas do catálogo) são ignoradas.
-- A classificação é feita em lotes de 25 músicas por chamada ao Gemini
-  para reduzir custo e latência.
+- A classificação (`classify`) é feita em lotes de 25 músicas por chamada
+  ao Gemini para reduzir custo e latência.
+- As sugestões do `update-playlist` vêm do conhecimento do Gemini sobre
+  música; cada sugestão só é oferecida depois de confirmada uma
+  correspondência real na busca do YouTube Music.
