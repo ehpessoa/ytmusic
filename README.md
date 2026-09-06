@@ -3,9 +3,9 @@
 Ferramentas de linha de comando para a sua conta do YouTube Music, com
 apoio do **Gemini**:
 
-- **`classify`** — lê todas as músicas da playlist **Best Pop Rock Ever**,
+- **`split-playlist`** — lê qualquer playlist que você informar,
   identifica o que é realmente Pop e o que é realmente Rock, e organiza o
-  resultado em duas novas playlists: **Best Pop Ever** e **Best Rock Ever**.
+  resultado em duas playlists de destino também informadas por você.
 - **`update-playlist`** — analisa o padrão de gosto musical de uma
   playlist existente, busca no YouTube Music novas músicas que combinem
   com esse padrão e deixa você escolher quais adicionar.
@@ -59,15 +59,21 @@ cp .env.example .env
 
 ## 4. Rodar
 
-### Classificar Pop Rock Ever em Pop / Rock
+### Separar uma playlist em Pop / Rock
 
 ```bash
-python main.py classify
+python main.py split-playlist \
+  --source "Best Pop Rock Ever" \
+  --pop-playlist "Best Pop Ever" \
+  --rock-playlist "Best Rock Ever"
 ```
 
-Use `python main.py classify --dry-run` para ver a classificação de cada
-faixa no terminal sem criar ou alterar nenhuma playlist na sua conta —
-útil para conferir o resultado antes de aplicar.
+`--source`, `--pop-playlist` e `--rock-playlist` aceitam qualquer nome de
+playlist da sua biblioteca — o comando não fica preso a nomes fixos.
+
+Use `--dry-run` para ver a classificação de cada faixa no terminal sem
+criar ou alterar nenhuma playlist na sua conta — útil para conferir o
+resultado antes de aplicar.
 
 ### Sugerir novas músicas para uma playlist existente
 
@@ -95,8 +101,8 @@ O comando:
   apenas no arquivo local `oauth.json`/`browser.json`, que **não deve ser
   commitado** (já está coberto pelo `.gitignore`).
 - Faixas indisponíveis (removidas do catálogo) são ignoradas.
-- A classificação (`classify`) é feita em lotes de 25 músicas por chamada
-  ao Gemini para reduzir custo e latência.
+- A classificação (`split-playlist`) é feita em lotes de 25 músicas por
+  chamada ao Gemini para reduzir custo e latência.
 - As sugestões do `update-playlist` vêm do conhecimento do Gemini sobre
   música; cada sugestão só é oferecida depois de confirmada uma
   correspondência real na busca do YouTube Music.

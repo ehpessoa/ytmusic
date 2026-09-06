@@ -2,10 +2,10 @@
 
 Comandos disponíveis:
 
-  classify
-      Lê a playlist 'Best Pop Rock Ever', classifica cada faixa como Pop ou
-      Rock via Gemini, e organiza o resultado em 'Best Pop Ever' /
-      'Best Rock Ever'.
+  split-playlist
+      Lê qualquer playlist de origem, classifica cada faixa como Pop ou
+      Rock via Gemini, e organiza o resultado em duas playlists novas (ou
+      já existentes) informadas na linha de comando.
 
   update-playlist
       Analisa o padrão de gosto musical de uma playlist existente, busca no
@@ -13,16 +13,15 @@ Comandos disponíveis:
       escolher quais adicionar.
 
 Uso:
-    python main.py classify [--dry-run]
+    python main.py split-playlist --source "Nome da playlist" \\
+        --pop-playlist "Nome da playlist de Pop" \\
+        --rock-playlist "Nome da playlist de Rock" [--dry-run]
     python main.py update-playlist --playlist "Nome da playlist" [--batch-size N]
 
 Configuração via variáveis de ambiente (ou arquivo .env, veja .env.example):
     GEMINI_API_KEY          obrigatório
     GEMINI_MODEL            padrão: gemini-2.5-flash
     YTMUSIC_AUTH_FILE       padrão: oauth.json
-    SOURCE_PLAYLIST_NAME    padrão: Best Pop Rock Ever (usado por 'classify')
-    POP_PLAYLIST_NAME       padrão: Best Pop Ever (usado por 'classify')
-    ROCK_PLAYLIST_NAME      padrão: Best Rock Ever (usado por 'classify')
 """
 
 from __future__ import annotations
@@ -59,16 +58,16 @@ def _require_env(auth_file: str) -> tuple[str, str] | int:
     return gemini_api_key, gemini_model
 
 
-def run_classify(args: argparse.Namespace) -> int:
+def run_split_playlist(args: argparse.Namespace) -> int:
     auth_file = os.environ.get("YTMUSIC_AUTH_FILE", "oauth.json")
     env = _require_env(auth_file)
     if isinstance(env, int):
         return env
     gemini_api_key, gemini_model = env
 
-    source_playlist_name = os.environ.get("SOURCE_PLAYLIST_NAME", "Best Pop Rock Ever")
-    pop_playlist_name = os.environ.get("POP_PLAYLIST_NAME", "Best Pop Ever")
-    rock_playlist_name = os.environ.get("ROCK_PLAYLIST_NAME", "Best Rock Ever")
+    source_playlist_name = args.source
+    pop_playlist_name = args.pop_playlist
+    rock_playlist_name = args.rock_playlist
 
     client = YTMusicClient(auth_file)
 
@@ -209,11 +208,24 @@ def main() -> int:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    classify_parser = subparsers.add_parser(
-        "classify",
-        help="Classifica 'Best Pop Rock Ever' em Best Pop Ever / Best Rock Ever.",
+    split_parser = subparsers.add_parser(
+        "split-playlist",
+        help="Classifica as faixas de uma playlist em Pop/Rock e as separa em duas playlists.",
     )
-    classify_parser.add_argument(
+    split_parser.add_argument(
+        "--source", required=True, help="Nome da playlist de origem a classificar."
+    )
+    split_parser.add_argument(
+        "--pop-playlist",
+        required=True,
+        help="Nome da playlist de destino para as faixas classificadas como Pop.",
+    )
+    split_parser.add_argument(
+        "--rock-playlist",
+        required=True,
+        help="Nome da playlist de destino para as faixas classificadas como Rock.",
+    )
+    split_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Classifica e mostra o resultado sem criar/alterar playlists.",
@@ -235,8 +247,8 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    if args.command == "classify":
-        return run_classify(args)
+    if args.command == "split-playlist":
+        return run_split_playlist(args)
     return run_update_playlist(args)
 
 
