@@ -3,9 +3,10 @@
 Comandos disponíveis:
 
   split-playlist
-      Lê qualquer playlist de origem, classifica cada faixa como Pop ou
-      Rock via Gemini, e organiza o resultado em duas playlists novas (ou
-      já existentes) informadas na linha de comando.
+      Lê qualquer playlist de origem, classifica cada faixa entre dois ou
+      mais estilos musicais via Gemini, e organiza o resultado em uma
+      playlist de destino por estilo — tudo informado na linha de comando,
+      nada fixo no código.
 
   update-playlist
       Analisa o padrão de gosto musical de uma playlist existente, busca no
@@ -14,9 +15,15 @@ Comandos disponíveis:
 
 Uso:
     python main.py split-playlist --source "Nome da playlist" \\
-        --pop-playlist "Nome da playlist de Pop" \\
-        --rock-playlist "Nome da playlist de Rock" [--dry-run]
+        --style "Estilo 1=Playlist de destino 1" \\
+        --style "Estilo 2=Playlist de destino 2" \\
+        [--style "Estilo 3=Playlist de destino 3" ...] [--dry-run]
     python main.py update-playlist --playlist "Nome da playlist" [--batch-size N]
+
+Exemplos de --style:
+    Pop/Rock:   --style "Pop=Best Pop Ever" --style "Rock=Best Rock Ever"
+    MPB em 3:   --style "MPB Clássica=MPB Clássica" \\
+                --style "Samba=Samba" --style "Rap=Rap"
 
 Configuração via variáveis de ambiente (ou arquivo .env, veja .env.example):
     GEMINI_API_KEY          obrigatório
@@ -35,7 +42,7 @@ from dotenv import load_dotenv
 from gemini_classifier import GeminiClassifier
 from suggestion_engine import MAX_BATCH_SIZE, SuggestionEngine
 from taste_advisor import TasteAdvisor
-from ytmusic_client import PlaylistNotFoundError, YTMusicClient
+from ytmusic_client import PlaylistNotFoundError, Track, YTMusicClient
 
 
 def _require_env(auth_file: str) -> tuple[str, str] | int:
@@ -58,6 +65,27 @@ def _require_env(auth_file: str) -> tuple[str, str] | int:
     return gemini_api_key, gemini_model
 
 
+def _parse_styles(raw_styles: list[str]) -> dict[str, str]:
+    """Converte ["Estilo=Playlist", ...] em {"Estilo": "Playlist", ...},
+    validando o formato e exigindo pelo menos 2 estilos distintos."""
+    styles: dict[str, str] = {}
+    for item in raw_styles:
+        genre, sep, playlist_name = item.partition("=")
+        genre = genre.strip()
+        playlist_name = playlist_name.strip()
+        if not sep or not genre or not playlist_name:
+            raise ValueError(
+                f"Formato inválido em --style '{item}'. Use 'Estilo=Nome da Playlist'."
+            )
+        if genre in styles:
+            raise ValueError(f"Estilo '{genre}' repetido em --style.")
+        styles[genre] = playlist_name
+
+    if len(styles) < 2:
+        raise ValueError("Informe pelo menos 2 --style para dividir a playlist.")
+    return styles
+
+
 def run_split_playlist(args: argparse.Namespace) -> int:
     auth_file = os.environ.get("YTMUSIC_AUTH_FILE", "oauth.json")
     env = _require_env(auth_file)
@@ -65,9 +93,14 @@ def run_split_playlist(args: argparse.Namespace) -> int:
         return env
     gemini_api_key, gemini_model = env
 
+    try:
+        styles = _parse_styles(args.styles)
+    except ValueError as exc:
+        print(f"Erro: {exc}", file=sys.stderr)
+        return 1
+
     source_playlist_name = args.source
-    pop_playlist_name = args.pop_playlist
-    rock_playlist_name = args.rock_playlist
+    style_labels = list(styles.keys())
 
     client = YTMusicClient(auth_file)
 
@@ -84,16 +117,18 @@ def run_split_playlist(args: argparse.Namespace) -> int:
         print("Nada a classificar, encerrando.")
         return 0
 
-    print(f"Classificando faixas com o Gemini ({gemini_model})...")
+    print(f"Classificando faixas com o Gemini ({gemini_model}) nos estilos: {', '.join(style_labels)}...")
     classifier = GeminiClassifier(api_key=gemini_api_key, model=gemini_model)
-    genre_by_video_id = classifier.classify(tracks)
+    genre_by_video_id = classifier.classify(tracks, style_labels)
 
-    pop_tracks = [t for t in tracks if genre_by_video_id[t.video_id] == "Pop"]
-    rock_tracks = [t for t in tracks if genre_by_video_id[t.video_id] == "Rock"]
-
-    print(f"Pop: {len(pop_tracks)} faixas | Rock: {len(rock_tracks)} faixas")
+    tracks_by_style: dict[str, list[Track]] = {label: [] for label in style_labels}
     for track in tracks:
-        print(f"  [{genre_by_video_id[track.video_id]:4}] {track.title} — {track.artists}")
+        tracks_by_style[genre_by_video_id[track.video_id]].append(track)
+
+    for label in style_labels:
+        print(f"{label}: {len(tracks_by_style[label])} faixas")
+    for track in tracks:
+        print(f"  [{genre_by_video_id[track.video_id]}] {track.title} — {track.artists}")
 
     if args.dry_run:
         print("\n--dry-run ativo: nenhuma playlist foi criada ou alterada.")
@@ -101,13 +136,12 @@ def run_split_playlist(args: argparse.Namespace) -> int:
 
     description = f"Gerada automaticamente a partir de '{source_playlist_name}' via Gemini."
 
-    print(f"\nCriando/atualizando playlist '{pop_playlist_name}'...")
-    pop_playlist_id = client.get_or_create_playlist(pop_playlist_name, description)
-    client.add_tracks(pop_playlist_id, [t.video_id for t in pop_tracks])
-
-    print(f"Criando/atualizando playlist '{rock_playlist_name}'...")
-    rock_playlist_id = client.get_or_create_playlist(rock_playlist_name, description)
-    client.add_tracks(rock_playlist_id, [t.video_id for t in rock_tracks])
+    for label in style_labels:
+        playlist_name = styles[label]
+        style_tracks = tracks_by_style[label]
+        print(f"\nCriando/atualizando playlist '{playlist_name}' ({label})...")
+        playlist_id = client.get_or_create_playlist(playlist_name, description)
+        client.add_tracks(playlist_id, [t.video_id for t in style_tracks])
 
     print("\nConcluído.")
     return 0
@@ -210,20 +244,25 @@ def main() -> int:
 
     split_parser = subparsers.add_parser(
         "split-playlist",
-        help="Classifica as faixas de uma playlist em Pop/Rock e as separa em duas playlists.",
+        help="Classifica as faixas de uma playlist em dois ou mais estilos e as separa em playlists.",
     )
     split_parser.add_argument(
         "--source", required=True, help="Nome da playlist de origem a classificar."
     )
     split_parser.add_argument(
-        "--pop-playlist",
+        "--style",
+        dest="styles",
+        action="append",
         required=True,
-        help="Nome da playlist de destino para as faixas classificadas como Pop.",
-    )
-    split_parser.add_argument(
-        "--rock-playlist",
-        required=True,
-        help="Nome da playlist de destino para as faixas classificadas como Rock.",
+        metavar="ESTILO=PLAYLIST",
+        help=(
+            "Um estilo musical e a playlist de destino para ele, no formato "
+            "'Estilo=Nome da Playlist'. Repita --style uma vez por estilo "
+            "(mínimo 2). Ex.: --style 'Pop=Best Pop Ever' "
+            "--style 'Rock=Best Rock Ever'; ou, para dividir uma playlist de "
+            "MPB em três: --style 'MPB Clássica=MPB Clássica' "
+            "--style 'Samba=Samba' --style 'Rap=Rap'."
+        ),
     )
     split_parser.add_argument(
         "--dry-run",

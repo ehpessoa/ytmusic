@@ -4,8 +4,10 @@ Ferramentas de linha de comando para a sua conta do YouTube Music, com
 apoio do **Gemini**:
 
 - **`split-playlist`** — lê qualquer playlist que você informar,
-  identifica o que é realmente Pop e o que é realmente Rock, e organiza o
-  resultado em duas playlists de destino também informadas por você.
+  classifica cada faixa entre dois ou mais estilos musicais à sua escolha
+  (não só Pop/Rock — pode ser qualquer conjunto de estilos) e organiza o
+  resultado em uma playlist de destino por estilo, também definida por
+  você.
 - **`update-playlist`** — analisa o padrão de gosto musical de uma
   playlist existente, busca no YouTube Music novas músicas que combinem
   com esse padrão e deixa você escolher quais adicionar.
@@ -59,17 +61,28 @@ cp .env.example .env
 
 ## 4. Rodar
 
-### Separar uma playlist em Pop / Rock
+### Separar uma playlist entre dois ou mais estilos
 
 ```bash
 python main.py split-playlist \
   --source "Best Pop Rock Ever" \
-  --pop-playlist "Best Pop Ever" \
-  --rock-playlist "Best Rock Ever"
+  --style "Pop=Best Pop Ever" \
+  --style "Rock=Best Rock Ever"
 ```
 
-`--source`, `--pop-playlist` e `--rock-playlist` aceitam qualquer nome de
-playlist da sua biblioteca — o comando não fica preso a nomes fixos.
+`--source` e cada `--style` aceitam qualquer nome de playlist da sua
+biblioteca — nada fica preso a nomes fixos, nem ao par Pop/Rock. Cada
+`--style` tem o formato `Estilo=Nome da playlist de destino` e pode ser
+repetido quantas vezes quiser (mínimo 2). Por exemplo, para dividir uma
+playlist de MPB em três:
+
+```bash
+python main.py split-playlist \
+  --source "Minha playlist de MPB" \
+  --style "MPB Clássica=MPB Clássica" \
+  --style "Samba=Samba" \
+  --style "Rap=Rap"
+```
 
 Use `--dry-run` para ver a classificação de cada faixa no terminal sem
 criar ou alterar nenhuma playlist na sua conta — útil para conferir o
