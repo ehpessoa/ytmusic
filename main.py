@@ -35,13 +35,14 @@ Exemplos de --style:
 
 Configuração via variáveis de ambiente (ou arquivo .env, veja .env.example):
     GEMINI_API_KEY          obrigatório
-    GEMINI_MODEL            padrão: gemini-2.5-flash
+    GEMINI_MODEL            padrão: gemini-3.6-flash
     YTMUSIC_AUTH_FILE       padrão: oauth.json
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 
@@ -50,7 +51,13 @@ from dotenv import load_dotenv
 from gemini_classifier import GeminiClassifier
 from suggestion_engine import MAX_BATCH_SIZE, SuggestionEngine
 from taste_advisor import TasteAdvisor
-from ytmusic_client import PlaylistNotFoundError, Track, YTMusicClient
+from ytmusic_client import AddTracksResult, PlaylistInfo, PlaylistNotFoundError, Track, YTMusicClient
+
+# A lib google-genai loga um aviso (via `logging`, não `warnings`) sobre uso
+# de automatic function calling toda vez que generate_content é chamado.
+# Não usamos function calling aqui, então o aviso é ruído — silenciamos só
+# esse logger específico.
+logging.getLogger("google_genai.models").setLevel(logging.ERROR)
 
 
 def _require_env(auth_file: str) -> tuple[str, str] | int:
@@ -69,8 +76,56 @@ def _require_env(auth_file: str) -> tuple[str, str] | int:
         )
         return 1
 
-    gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    gemini_model = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
     return gemini_api_key, gemini_model
+
+
+def _confirm_playlist(info: PlaylistInfo) -> bool:
+    """Mostra os detalhes da playlist encontrada e pede confirmação do
+    usuário antes de prosseguir. Retorna True se ele quiser continuar."""
+    print("\nPlaylist encontrada:")
+    print(f"  ID:           {info.id}")
+    print(f"  Nome:         {info.title}")
+    print(f"  Owner:        {info.owner}")
+    print(f"  Visibilidade: {info.privacy}")
+    print(f"  Faixas:       {len(info.tracks)}")
+
+    if info.tracks:
+        print("\n  Primeiras faixas:")
+        for i, track in enumerate(info.tracks[:10], start=1):
+            print(f"    {i}. {track.title} — {track.artists}")
+
+    answer = input("\nEsta é a playlist correta? Deseja continuar? (s/n): ").strip().casefold()
+    return answer in ("s", "sim", "y", "yes")
+
+
+def _progress_printer(label: str):
+    """Cria um callback (concluidos, total) -> None que imprime uma linha de
+    progresso com percentual, atualizada no lugar até concluir."""
+
+    def on_progress(done: int, total: int) -> None:
+        pct = int(done / total * 100) if total else 100
+        end = "\n" if done >= total else ""
+        print(f"\r  {label}: {done}/{total} ({pct}%)" + " " * 10, end=end, flush=True)
+
+    return on_progress
+
+
+def _report_add_result(
+    result: AddTracksResult, expected_count: int, title_by_video_id: dict[str, str] | None = None
+) -> None:
+    """Reporta o resultado de add_tracks, garantindo que nenhuma falha de
+    inserção passe despercebida pelo usuário."""
+    print(
+        f"  {result.added} adicionada(s), {result.already_present} já estavam "
+        f"na playlist, {len(result.failed_video_ids)} falharam "
+        f"(total esperado: {expected_count})."
+    )
+    if result.failed_video_ids:
+        print("  Aviso: as seguintes faixas NÃO puderam ser adicionadas:")
+        for video_id in result.failed_video_ids:
+            label = (title_by_video_id or {}).get(video_id, video_id)
+            print(f"    - {label}")
 
 
 def _parse_styles(raw_styles: list[str]) -> dict[str, str]:
@@ -119,15 +174,21 @@ def run_split_playlist(args: argparse.Namespace) -> int:
         print(f"Erro: {exc}", file=sys.stderr)
         return 1
 
-    tracks = client.get_playlist_tracks(source_playlist_id)
-    print(f"{len(tracks)} faixas encontradas.")
+    info = client.get_playlist_info(source_playlist_id)
+    if not _confirm_playlist(info):
+        print("Operação cancelada pelo usuário.")
+        return 0
+
+    tracks = info.tracks
     if not tracks:
         print("Nada a classificar, encerrando.")
         return 0
 
     print(f"Classificando faixas com o Gemini ({gemini_model}) nos estilos: {', '.join(style_labels)}...")
     classifier = GeminiClassifier(api_key=gemini_api_key, model=gemini_model)
-    genre_by_video_id = classifier.classify(tracks, style_labels)
+    genre_by_video_id = classifier.classify(
+        tracks, style_labels, on_progress=_progress_printer("Lotes classificados")
+    )
 
     tracks_by_style: dict[str, list[Track]] = {label: [] for label in style_labels}
     for track in tracks:
@@ -144,14 +205,29 @@ def run_split_playlist(args: argparse.Namespace) -> int:
 
     description = f"Gerada automaticamente a partir de '{source_playlist_name}' via Gemini."
 
+    title_by_video_id = {t.video_id: f"{t.title} — {t.artists}" for t in tracks}
+    total_failed = 0
+
     for label in style_labels:
         playlist_name = styles[label]
         style_tracks = tracks_by_style[label]
         print(f"\nCriando/atualizando playlist '{playlist_name}' ({label})...")
         playlist_id = client.get_or_create_playlist(playlist_name, description)
-        client.add_tracks(playlist_id, [t.video_id for t in style_tracks])
+        result = client.add_tracks(
+            playlist_id,
+            [t.video_id for t in style_tracks],
+            on_progress=_progress_printer("Faixas adicionadas"),
+        )
+        _report_add_result(result, len(style_tracks), title_by_video_id)
+        total_failed += len(result.failed_video_ids)
 
-    print("\nConcluído.")
+    if total_failed:
+        print(
+            f"\nConcluído com {total_failed} faixa(s) que não puderam ser "
+            "adicionadas — veja os avisos acima."
+        )
+    else:
+        print("\nConcluído.")
     return 0
 
 
@@ -187,8 +263,12 @@ def run_update_playlist(args: argparse.Namespace) -> int:
         print(f"Erro: {exc}", file=sys.stderr)
         return 1
 
-    tracks = client.get_playlist_tracks(playlist_id)
-    print(f"{len(tracks)} faixas na playlist atual.")
+    info = client.get_playlist_info(playlist_id)
+    if not _confirm_playlist(info):
+        print("Operação cancelada pelo usuário.")
+        return 0
+
+    tracks = info.tracks
     if not tracks:
         print("A playlist está vazia; não há como determinar um padrão de gosto.", file=sys.stderr)
         return 1
@@ -204,7 +284,11 @@ def run_update_playlist(args: argparse.Namespace) -> int:
 
     while True:
         print("Buscando sugestões no YouTube Music...")
-        batch = engine.next_batch(taste_profile, max_results=batch_size)
+        batch = engine.next_batch(
+            taste_profile,
+            max_results=batch_size,
+            on_progress=_progress_printer("Rodadas de busca"),
+        )
         if not batch:
             print("Não há mais sugestões novas no momento.")
             break
@@ -230,9 +314,10 @@ def run_update_playlist(args: argparse.Namespace) -> int:
             continue
 
         chosen = [batch[i - 1] for i in chosen_indices]
-        client.add_tracks(playlist_id, [s.video_id for s in chosen])
-        total_added += len(chosen)
-        print(f"Adicionada(s) {len(chosen)} música(s) à playlist '{args.playlist}'.")
+        title_by_video_id = {s.video_id: f"{s.title} — {s.artists}" for s in chosen}
+        result = client.add_tracks(playlist_id, [s.video_id for s in chosen])
+        total_added += result.added
+        _report_add_result(result, len(chosen), title_by_video_id)
 
         again = input("Ver mais sugestões? (s/n): ").strip().casefold()
         if again not in ("s", "sim", "y", "yes"):
@@ -265,7 +350,11 @@ def run_create_playlist(args: argparse.Namespace) -> int:
     while total_added < args.count:
         remaining = args.count - total_added
         print(f"\nBuscando músicas do estilo '{args.style}' ({remaining} faltando)...")
-        batch = engine.next_batch(taste_profile, max_results=10)
+        batch = engine.next_batch(
+            taste_profile,
+            max_results=10,
+            on_progress=_progress_printer("Rodadas de busca"),
+        )
         if not batch:
             print("Não há mais sugestões disponíveis para esse estilo.")
             break
@@ -303,12 +392,11 @@ def run_create_playlist(args: argparse.Namespace) -> int:
             description = f"Playlist de {args.style} criada via Gemini."
             playlist_id = client.get_or_create_playlist(args.name, description)
 
-        client.add_tracks(playlist_id, [s.video_id for s in chosen])
-        total_added += len(chosen)
-        print(
-            f"Adicionada(s) {len(chosen)} música(s) à playlist '{args.name}'. "
-            f"Total: {total_added}/{args.count}."
-        )
+        title_by_video_id = {s.video_id: f"{s.title} — {s.artists}" for s in chosen}
+        result = client.add_tracks(playlist_id, [s.video_id for s in chosen])
+        total_added += result.added
+        _report_add_result(result, len(chosen), title_by_video_id)
+        print(f"Total: {total_added}/{args.count}.")
 
     if total_added == 0:
         print("\nNenhuma música foi confirmada; a playlist não foi criada.")

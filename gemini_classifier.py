@@ -4,6 +4,8 @@ definido por quem chama, usando a API do Gemini."""
 from __future__ import annotations
 
 import json
+import math
+from typing import Callable
 
 from google import genai
 from google.genai import types
@@ -12,23 +14,36 @@ from ytmusic_client import Track
 
 BATCH_SIZE = 25
 
+ProgressCallback = Callable[[int, int], None]
+
 
 class GeminiClassifier:
     def __init__(self, api_key: str, model: str):
         self.client = genai.Client(api_key=api_key)
         self.model = model
 
-    def classify(self, tracks: list[Track], styles: list[str]) -> dict[str, str]:
+    def classify(
+        self,
+        tracks: list[Track],
+        styles: list[str],
+        on_progress: ProgressCallback | None = None,
+    ) -> dict[str, str]:
         """Retorna um dict video_id -> um dos rótulos em `styles`.
 
         `styles` deve ter pelo menos 2 rótulos (ex.: ["Pop", "Rock"] ou
         ["MPB Clássica", "Samba", "Rap"] para dividir uma playlist de MPB
         em mais de duas categorias).
+
+        Se `on_progress` for informado, é chamado com (lotes_concluídos,
+        total_de_lotes) após cada chamada ao Gemini.
         """
+        total_batches = math.ceil(len(tracks) / BATCH_SIZE)
         genre_by_video_id: dict[str, str] = {}
-        for start in range(0, len(tracks), BATCH_SIZE):
+        for batch_num, start in enumerate(range(0, len(tracks), BATCH_SIZE), start=1):
             batch = tracks[start : start + BATCH_SIZE]
             genre_by_video_id.update(self._classify_batch(batch, styles))
+            if on_progress:
+                on_progress(batch_num, total_batches)
         return genre_by_video_id
 
     def _classify_batch(self, batch: list[Track], styles: list[str]) -> dict[str, str]:
