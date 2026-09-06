@@ -13,12 +13,20 @@ Comandos disponíveis:
       YouTube Music novas músicas que combinem com esse padrão e deixa você
       escolher quais adicionar.
 
+  create-playlist
+      Cria (ou completa) uma playlist do zero a partir de um estilo
+      musical informado: busca músicas desse estilo em levas de 10,
+      pede para você validar quais realmente combinam com o estilo
+      desejado, e repete até atingir a quantidade de faixas pedida.
+
 Uso:
     python main.py split-playlist --source "Nome da playlist" \\
         --style "Estilo 1=Playlist de destino 1" \\
         --style "Estilo 2=Playlist de destino 2" \\
         [--style "Estilo 3=Playlist de destino 3" ...] [--dry-run]
     python main.py update-playlist --playlist "Nome da playlist" [--batch-size N]
+    python main.py create-playlist --name "Nome da nova playlist" \\
+        --style "Estilo musical" --count N
 
 Exemplos de --style:
     Pop/Rock:   --style "Pop=Best Pop Ever" --style "Rock=Best Rock Ever"
@@ -234,6 +242,91 @@ def run_update_playlist(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_create_playlist(args: argparse.Namespace) -> int:
+    auth_file = os.environ.get("YTMUSIC_AUTH_FILE", "oauth.json")
+    env = _require_env(auth_file)
+    if isinstance(env, int):
+        return env
+    gemini_api_key, gemini_model = env
+
+    if args.count <= 0:
+        print("Erro: --count deve ser maior que zero.", file=sys.stderr)
+        return 1
+
+    client = YTMusicClient(auth_file)
+    advisor = TasteAdvisor(api_key=gemini_api_key, model=gemini_model)
+    engine = SuggestionEngine(advisor, client, existing_tracks=[])
+
+    taste_profile = f"O usuário quer montar uma playlist do estilo musical '{args.style}'."
+
+    playlist_id: str | None = None
+    total_added = 0
+
+    while total_added < args.count:
+        remaining = args.count - total_added
+        print(f"\nBuscando músicas do estilo '{args.style}' ({remaining} faltando)...")
+        batch = engine.next_batch(taste_profile, max_results=10)
+        if not batch:
+            print("Não há mais sugestões disponíveis para esse estilo.")
+            break
+
+        print(f"Sugestões para validar (estilo desejado: {args.style}):")
+        for i, suggestion in enumerate(batch, start=1):
+            print(f"  {i}. {suggestion.title} — {suggestion.artists}")
+
+        selection = input(
+            "\nQuais destas realmente estão no estilo desejado? Digite os "
+            "números (ex.: 1,3,5), 'todas' para aceitar todas ou 'nenhuma' "
+            "para descartar esta leva e ver outras sugestões: "
+        ).strip().casefold()
+
+        if selection in ("todas", "all"):
+            chosen = list(batch)
+        elif selection in ("nenhuma", "none"):
+            chosen = []
+        else:
+            chosen_indices = _parse_selection(selection, len(batch))
+            chosen = [batch[i - 1] for i in chosen_indices]
+
+        if not chosen:
+            print("Nenhuma faixa confirmada nesta rodada; buscando novas sugestões...")
+            continue
+
+        if len(chosen) > remaining:
+            print(
+                f"Você confirmou {len(chosen)}, mas só faltavam {remaining}; "
+                f"usando apenas as {remaining} primeiras."
+            )
+            chosen = chosen[:remaining]
+
+        if playlist_id is None:
+            description = f"Playlist de {args.style} criada via Gemini."
+            playlist_id = client.get_or_create_playlist(args.name, description)
+
+        client.add_tracks(playlist_id, [s.video_id for s in chosen])
+        total_added += len(chosen)
+        print(
+            f"Adicionada(s) {len(chosen)} música(s) à playlist '{args.name}'. "
+            f"Total: {total_added}/{args.count}."
+        )
+
+    if total_added == 0:
+        print("\nNenhuma música foi confirmada; a playlist não foi criada.")
+        return 1
+
+    if total_added < args.count:
+        print(
+            f"\nConcluído com {total_added}/{args.count} músicas — não foi possível "
+            f"encontrar mais sugestões válidas para o estilo '{args.style}'."
+        )
+    else:
+        print(
+            f"\nConcluído. Playlist '{args.name}' com {total_added} música(s) "
+            f"do estilo '{args.style}'."
+        )
+    return 0
+
+
 def main() -> int:
     load_dotenv()
 
@@ -284,11 +377,27 @@ def main() -> int:
         help=f"Máximo de sugestões mostradas por rodada (padrão e limite: {MAX_BATCH_SIZE}).",
     )
 
+    create_parser = subparsers.add_parser(
+        "create-playlist",
+        help="Cria uma playlist do zero a partir de um estilo musical, com validação do usuário.",
+    )
+    create_parser.add_argument(
+        "--name", required=True, help="Nome da playlist a criar (ou completar, se já existir)."
+    )
+    create_parser.add_argument(
+        "--style", required=True, help="Estilo musical desejado para a playlist."
+    )
+    create_parser.add_argument(
+        "--count", type=int, required=True, help="Quantidade de faixas que a playlist deve ter."
+    )
+
     args = parser.parse_args()
 
     if args.command == "split-playlist":
         return run_split_playlist(args)
-    return run_update_playlist(args)
+    if args.command == "update-playlist":
+        return run_update_playlist(args)
+    return run_create_playlist(args)
 
 
 if __name__ == "__main__":

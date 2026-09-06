@@ -11,6 +11,10 @@ apoio do **Gemini**:
 - **`update-playlist`** — analisa o padrão de gosto musical de uma
   playlist existente, busca no YouTube Music novas músicas que combinem
   com esse padrão e deixa você escolher quais adicionar.
+- **`create-playlist`** — cria uma playlist do zero a partir de um estilo
+  musical e uma quantidade de faixas desejada, buscando músicas em levas
+  de 10 e pedindo para você confirmar quais realmente combinam com o
+  estilo antes de completar a playlist.
 
 Se uma playlist com o nome de destino já existir na sua biblioteca, as
 faixas são adicionadas a ela em vez de criar uma duplicata.
@@ -106,6 +110,24 @@ O comando:
 4. Você escolhe quais adicionar digitando os números (ex.: `1,3,5`),
    digita `mais` para ver uma nova leva de sugestões — que nunca repete
    uma música já mostrada nesta mesma execução — ou `sair` para terminar.
+
+### Criar uma playlist do zero a partir de um estilo
+
+```bash
+python main.py create-playlist --name "Minha playlist de Jazz" --style "Jazz" --count 30
+```
+
+O comando:
+
+1. Busca 10 músicas do estilo informado por vez (via Gemini + validação
+   real no catálogo do YouTube Music, como no `update-playlist`).
+2. Mostra as 10 sugestões e pergunta quais realmente estão no estilo
+   desejado: digite os números (ex.: `1,3,5`), `todas` para aceitar a
+   leva inteira, ou `nenhuma` para descartá-la e buscar outra.
+3. As faixas confirmadas são adicionadas à playlist (criada no primeiro
+   lote confirmado, ou reaproveitada se já existir uma com esse nome).
+4. Repete até completar a quantidade pedida em `--count`, ou até o Gemini
+   não ter mais sugestões novas para aquele estilo.
 
 ## Observações
 
